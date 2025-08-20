@@ -32,6 +32,10 @@ ingress-controller-integration/
 cd ingress-controller-integration
 ./scripts/build.sh
 ```
+**⚠️ Known Issue**: Full ingress-controller build currently fails due to ModSecurity-Lua compatibility issues. Use the basic JA4 nginx build from the root directory instead:
+```bash
+cd .. && docker build -t ja4-nginx:source .
+```
 
 ### 2. Deploy to Kubernetes
 ```bash
@@ -41,6 +45,7 @@ cd ingress-controller-integration
 # Or patch existing deployment
 kubectl patch deployment ingress-nginx-controller -n ingress-nginx --patch-file kubernetes/deployment-patch.yaml
 ```
+**Note**: Deployment currently requires the basic JA4 nginx build due to build limitations.
 
 ### 3. Test JA4 Functionality
 ```bash
@@ -55,12 +60,22 @@ kubectl patch deployment ingress-nginx-controller -n ingress-nginx --patch-file 
 
 ## 🔧 Available JA4 Variables
 
-| Variable | Description | Use Case |
-|----------|-------------|----------|
-| `$http_ssl_ja4` | Standard JA4 client fingerprint | Bot detection, client identification |
-| `$http_ssl_ja4s` | Server JA4 fingerprint | Server configuration tracking |
-| `$http_ssl_ja4h` | HTTP header fingerprint | User-Agent spoofing detection |
-| `$http_ssl_ja4t` | TCP fingerprint | Network-level client identification |
+| Variable | Description | Use Case | Test Status |
+|----------|-------------|----------|-------------|
+| `$http_ssl_ja4` | Standard JA4 client fingerprint | Bot detection, client identification | ✅ **Verified** - Working |
+| `$http_ssl_ja4s` | Server JA4 fingerprint | Server configuration tracking | ⚠️ **Empty** in tests |
+| `$http_ssl_ja4h` | HTTP header fingerprint | User-Agent spoofing detection | ✅ **Verified** - Working |
+| `$http_ssl_ja4t` | TCP fingerprint | Network-level client identification | ⚠️ **Empty** in tests |
+| `$http_ssl_ja4x` | X.509 certificate fingerprint | Certificate-based identification | ⚠️ **Empty** in tests |
+| `$http_ssl_ja4_string` | Raw JA4 string components | Debugging/analysis | ✅ **Verified** - Working |
+
+### Test Results Summary
+- ✅ **JA4 Client Detection**: Successfully distinguishes different TLS clients
+  - curl: `t13d3112h2_e8f1e7e78f70_b26ce05bbdd6`
+  - wget: `t13d751100_479067518aa3_fb8d5ffd48c1`
+- ✅ **HTTP Fingerprinting**: JA4H generates unique fingerprints per client
+- ✅ **Variable Integration**: All variables accessible in nginx config and logs
+- ✅ **TLS 1.3 Support**: Tested and working with modern TLS versions
 
 ## 📚 Documentation
 
@@ -68,12 +83,59 @@ kubectl patch deployment ingress-nginx-controller -n ingress-nginx --patch-file 
 - **[Usage Guide](docs/USAGE_GUIDE.md)** - Complete configuration examples  
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 
-## ⚠️ Important Notes
+## 🧪 Manual Testing (Alternative to Failed Build)
 
+Since the full ingress-controller build fails, you can test JA4 functionality using the basic module:
+
+### 1. Build and Run Basic JA4 Nginx
+```bash
+# From project root
+docker build -t ja4-nginx:source .
+docker run -d --name ja4-test -p 8443:443 -p 8080:80 ja4-nginx:source
+```
+
+### 2. Test JA4 Fingerprinting
+```bash
+# Test with curl (generates one fingerprint)
+curl -k https://localhost:8443/ja4
+
+# Test with wget (generates different fingerprint)
+wget --no-check-certificate -qO- https://localhost:8443/ja4
+```
+
+### 3. Expected Output
+```json
+{
+  "ja4": "t13d3112h2_e8f1e7e78f70_b26ce05bbdd6",
+  "ja4h": "ge11nn030000_b51846f30ce9_e3b0c44298fc_e3b0c44298fc",
+  "ssl_protocol": "TLSv1.3",
+  "ssl_cipher": "TLS_AES_256_GCM_SHA384"
+}
+```
+
+Different clients will generate unique JA4 fingerprints, demonstrating the module's ability to distinguish between TLS implementations.
+
+## ⚠️ Important Notes & Risks
+
+### **Build Status**
+- ❌ **Full ingress-controller integration**: Currently fails due to ModSecurity-Lua compatibility issues
+- ✅ **Basic JA4 nginx module**: Successfully builds and functions correctly
+
+### **Production Risk Assessment**
+- 🔴 **HIGH RISK**: Beta software with known bugs that may produce incorrect JA4 values
+- 🟡 **MEDIUM RISK**: Custom build required, maintenance burden, limited support
+- 🟢 **LOW RISK**: Some JA4 variants return empty values in testing
+
+### **Deployment Recommendations**
+- ✅ **Recommended**: Development, testing, security research environments
+- ❌ **Not Recommended**: Production, high-traffic, or compliance-sensitive deployments
+- ⚠️ **Caution Required**: Extensive testing needed before any production consideration
+
+### **Technical Limitations**
 - This integration is based on **nginx-ingress-controller v1.11.5**
 - JA4 module is currently in **beta** with known issues
-- Test thoroughly before production deployment
 - Monitor performance impact on SSL handshakes
+- ModSecurity integration currently incompatible
 
 ## 🤝 Contributing
 
