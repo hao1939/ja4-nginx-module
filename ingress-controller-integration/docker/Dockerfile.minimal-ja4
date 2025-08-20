@@ -1,0 +1,108 @@
+# Multi-stage Dockerfile to build nginx-ingress-controller with JA4 module
+# Minimal version with only essential modules
+
+FROM alpine:3.21 AS builder
+
+# Version arguments
+ARG NGINX_VERSION=1.25.5
+ARG OPENSSL_VERSION=3.3.3
+ARG JA4_MODULE_VERSION=v1.3.0-beta
+
+# Install minimal build dependencies
+RUN apk add --no-cache \
+    gcc g++ libc-dev make git wget patch \
+    pcre-dev zlib-dev openssl-dev linux-headers
+
+WORKDIR /tmp/build
+
+# Download JA4 module
+RUN echo "==> Downloading JA4 module ${JA4_MODULE_VERSION}" && \
+    wget https://github.com/FoxIO-LLC/ja4-nginx-module/releases/download/${JA4_MODULE_VERSION}/ja4-nginx-module-${JA4_MODULE_VERSION}.tar.gz && \
+    tar -zxf ja4-nginx-module-${JA4_MODULE_VERSION}.tar.gz && \
+    mv ja4-nginx-module-${JA4_MODULE_VERSION} ja4-nginx-module
+
+# Download nginx source
+RUN echo "==> Downloading nginx ${NGINX_VERSION}" && \
+    wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    tar -zxf nginx-${NGINX_VERSION}.tar.gz
+
+# Download OpenSSL source
+RUN echo "==> Downloading OpenSSL ${OPENSSL_VERSION}" && \
+    wget https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz && \
+    tar -zxf openssl-${OPENSSL_VERSION}.tar.gz
+
+# Apply JA4 patches
+RUN echo "==> Applying JA4 patches" && \
+    cd openssl-${OPENSSL_VERSION} && \
+    patch -p1 < /tmp/build/ja4-nginx-module/patches/openssl.patch && \
+    cd ../nginx-${NGINX_VERSION} && \
+    patch -p1 < /tmp/build/ja4-nginx-module/patches/nginx.patch
+
+# Build minimal nginx with JA4
+RUN echo "==> Building minimal nginx with JA4" && \
+    cd nginx-${NGINX_VERSION} && \
+    ./configure \
+        --prefix=/usr/local/nginx \
+        --conf-path=/etc/nginx/nginx.conf \
+        --modules-path=/etc/nginx/modules \
+        --http-log-path=/var/log/nginx/access.log \
+        --error-log-path=/var/log/nginx/error.log \
+        --lock-path=/var/lock/nginx.lock \
+        --pid-path=/run/nginx.pid \
+        --http-client-body-temp-path=/var/lib/nginx/body \
+        --http-fastcgi-temp-path=/var/lib/nginx/fastcgi \
+        --http-proxy-temp-path=/var/lib/nginx/proxy \
+        --http-scgi-temp-path=/var/lib/nginx/scgi \
+        --http-uwsgi-temp-path=/var/lib/nginx/uwsgi \
+        --with-debug \
+        --with-compat \
+        --with-pcre-jit \
+        --with-http_ssl_module \
+        --with-http_stub_status_module \
+        --with-http_realip_module \
+        --with-http_auth_request_module \
+        --with-http_addition_module \
+        --with-http_gzip_static_module \
+        --with-http_sub_module \
+        --with-http_v2_module \
+        --with-stream \
+        --with-stream_ssl_module \
+        --with-stream_realip_module \
+        --with-stream_ssl_preread_module \
+        --with-threads \
+        --with-http_secure_link_module \
+        --with-http_gunzip_module \
+        --with-file-aio \
+        --without-mail_pop3_module \
+        --without-mail_smtp_module \
+        --without-mail_imap_module \
+        --without-http_uwsgi_module \
+        --without-http_scgi_module \
+        --with-cc-opt='-g -O2 -fPIE -fstack-protector-strong -Wformat -Werror=format-security -Wno-deprecated-declarations -fno-strict-aliasing -D_FORTIFY_SOURCE=2 --param=ssp-buffer-size=4 -DTCP_FASTOPEN=23 -fPIC -Wno-cast-function-type -m64 -mtune=generic' \
+        --with-ld-opt='-fPIE -fPIC -pie -Wl,-z,relro -Wl,-z,now' \
+        --user=www-data \
+        --group=www-data \
+        --with-openssl=/tmp/build/openssl-${OPENSSL_VERSION} \
+        --add-module=/tmp/build/ja4-nginx-module/src && \
+    make -j$(nproc) && \
+    make install
+
+# Verify JA4 module
+RUN /usr/local/nginx/sbin/nginx -V 2>&1 | grep -q "ja4" && \
+    echo "✅ JA4 module successfully integrated" || \
+    (echo "❌ JA4 module not found" && exit 1)
+
+FROM mcr.microsoft.com/oss/kubernetes/ingress/nginx-ingress-controller:v1.11.5
+
+# Copy JA4-enabled nginx binary
+COPY --from=builder /usr/local/nginx/sbin/nginx /usr/local/nginx/sbin/nginx
+
+# Labels
+LABEL maintainer="JA4 Integration" \
+      description="nginx-ingress-controller with minimal JA4 support" \
+      ja4.module.version="${JA4_MODULE_VERSION}"
+
+# Verification script
+RUN echo '#!/bin/sh' > /usr/local/bin/verify-ja4.sh && \
+    echo 'nginx -V 2>&1 | grep -q "ja4" && echo "✅ JA4 module present" || echo "❌ JA4 module missing"' >> /usr/local/bin/verify-ja4.sh && \
+    chmod +x /usr/local/bin/verify-ja4.sh

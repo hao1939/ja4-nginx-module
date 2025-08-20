@@ -1,0 +1,39 @@
+# Patch to update existing nginx-ingress-controller deployment with JA4 support
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+spec:
+  template:
+    spec:
+      containers:
+      - name: controller
+        image: ja4-nginx-ingress:v1.11.5
+        # Additional environment variables for JA4 debugging (optional)
+        env:
+        - name: ENABLE_JA4_DEBUG
+          value: "false"
+        # Liveness probe adjustment (JA4 processing may add slight latency)
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5  # Increased from default
+          successThreshold: 1
+          failureThreshold: 5
+        # Readiness probe adjustment
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5  # Increased from default
+          successThreshold: 1
+          failureThreshold: 3

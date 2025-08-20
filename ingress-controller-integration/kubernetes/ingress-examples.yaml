@@ -1,0 +1,280 @@
+# Ingress Examples for JA4-enabled nginx-ingress-controller
+
+# Basic ingress with JA4 headers
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: basic-ja4-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # Add JA4 fingerprint headers
+      add_header X-JA4-Client "$http_ssl_ja4" always;
+      add_header X-JA4-Server "$http_ssl_ja4s" always;
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: example-service
+            port:
+              number: 80
+
+---
+# Security-focused ingress with JA4-based blocking
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: security-ja4-ingress
+  namespace: default
+  annotations:
+    # Rate limiting configuration
+    nginx.ingress.kubernetes.io/rate-limit: "10"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # JA4-based security rules
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # Block known malicious JA4 patterns
+      if ($http_ssl_ja4 ~ "^t13d.*_malicious_pattern") {
+          return 403 "Blocked by security policy";
+      }
+      
+      # Enhanced rate limiting for suspicious patterns
+      if ($http_ssl_ja4 ~ "^t12d.*_bot_signature") {
+          set $limit_rate 1k;
+      }
+      
+      # Log security events with JA4 context
+      if ($http_ssl_ja4 ~ "(malicious|suspicious|bot)") {
+          access_log /var/log/nginx/security.log 
+              '$remote_addr - [$time_local] SECURITY: "$request" ja4="$http_ssl_ja4"';
+      }
+      
+      # Add security headers
+      add_header X-Security-JA4-Checked "true" always;
+      add_header X-JA4-Risk-Level "low" always;
+spec:
+  tls:
+  - hosts:
+    - secure.example.com
+    secretName: example-tls
+  rules:
+  - host: secure.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: secure-service
+            port:
+              number: 443
+
+---
+# API ingress with JA4-based client detection
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ja4-ingress
+  namespace: default
+  annotations:
+    # CORS configuration
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    
+    # JA4-based client detection and routing
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # Detect client types based on JA4 patterns
+      set $client_type "unknown";
+      set $api_version "v1";
+      
+      # Browser clients
+      if ($http_ssl_ja4h ~ "ge11.*chrome") {
+          set $client_type "browser";
+      }
+      if ($http_ssl_ja4h ~ "ge11.*firefox") {
+          set $client_type "browser";
+      }
+      
+      # Mobile clients
+      if ($http_ssl_ja4h ~ ".*mobile.*") {
+          set $client_type "mobile";
+          set $api_version "mobile";
+      }
+      
+      # API clients (curl, etc.)
+      if ($http_ssl_ja4h ~ "po.*") {
+          set $client_type "api_client";
+      }
+      
+      # Bot detection
+      if ($http_ssl_ja4h ~ "(bot|crawler|spider)") {
+          set $client_type "bot";
+      }
+      
+      # Pass client type to upstream
+      proxy_set_header X-Client-Type $client_type;
+      proxy_set_header X-API-Version $api_version;
+      proxy_set_header X-JA4-Fingerprint $http_ssl_ja4;
+      
+      # Different caching based on client type
+      if ($client_type = "browser") {
+          expires 5m;
+      }
+      if ($client_type = "api_client") {
+          expires 1h;
+      }
+      
+      # Add client detection headers
+      add_header X-Detected-Client "$client_type" always;
+      add_header X-API-Version "$api_version" always;
+spec:
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: api-tls
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /v1
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service-v1
+            port:
+              number: 8080
+      - path: /mobile
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service-mobile
+            port:
+              number: 8080
+
+---
+# Analytics ingress with comprehensive JA4 logging
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: analytics-ja4-ingress
+  namespace: default
+  annotations:
+    # Custom log format for analytics
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # Custom access log for analytics
+      access_log /var/log/nginx/analytics.log 
+      '{
+        "timestamp": "$time_iso8601",
+        "request_id": "$request_id",
+        "remote_addr": "$remote_addr",
+        "method": "$request_method",
+        "uri": "$request_uri",
+        "status": $status,
+        "body_bytes_sent": $body_bytes_sent,
+        "referer": "$http_referer",
+        "user_agent": "$http_user_agent",
+        "request_time": $request_time,
+        "ja4": {
+          "client": "$http_ssl_ja4",
+          "server": "$http_ssl_ja4s",
+          "http": "$http_ssl_ja4h",
+          "tcp": "$http_ssl_ja4t"
+        },
+        "ssl": {
+          "protocol": "$ssl_protocol",
+          "cipher": "$ssl_cipher",
+          "session_reused": "$ssl_session_reused"
+        }
+      }';
+      
+    # JA4 analytics processing
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # Track unique JA4 signatures for analytics
+      set $ja4_hash $http_ssl_ja4;
+      
+      # Add analytics headers
+      add_header X-Analytics-JA4 "$http_ssl_ja4" always;
+      add_header X-Analytics-Timestamp "$time_iso8601" always;
+      add_header X-Request-ID "$request_id" always;
+      
+      # Performance monitoring based on JA4 patterns
+      if ($http_ssl_ja4 ~ "^t13d") {
+          set $tls_version "1.3";
+      }
+      if ($http_ssl_ja4 ~ "^t12d") {
+          set $tls_version "1.2";
+      }
+      
+      add_header X-TLS-Version "$tls_version" always;
+spec:
+  rules:
+  - host: analytics.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: analytics-service
+            port:
+              number: 80
+
+---
+# Multi-tenant ingress with JA4-based tenant detection
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multitenant-ja4-ingress
+  namespace: default
+  annotations:
+    # Tenant detection based on JA4 patterns
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # Default tenant
+      set $tenant_id "default";
+      set $tenant_backend "default-service";
+      
+      # Map JA4 patterns to tenants (example patterns)
+      if ($http_ssl_ja4 ~ "^t13d1516.*_enterprise_pattern") {
+          set $tenant_id "enterprise";
+          set $tenant_backend "enterprise-service";
+      }
+      
+      if ($http_ssl_ja4 ~ "^t12d.*_legacy_pattern") {
+          set $tenant_id "legacy";  
+          set $tenant_backend "legacy-service";
+      }
+      
+      # Pass tenant information to upstream
+      proxy_set_header X-Tenant-ID $tenant_id;
+      proxy_set_header X-JA4-Pattern $http_ssl_ja4;
+      
+      # Tenant-specific rate limiting
+      if ($tenant_id = "enterprise") {
+          set $limit_rate 10m;
+      }
+      if ($tenant_id = "legacy") {
+          set $limit_rate 1m;
+      }
+      
+      # Add tenant headers
+      add_header X-Tenant-ID "$tenant_id" always;
+      
+    # Dynamic upstream selection based on tenant
+    nginx.ingress.kubernetes.io/upstream-vhost: "$tenant_backend.default.svc.cluster.local"
+spec:
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: default-service  # This gets overridden by upstream-vhost
+            port:
+              number: 80

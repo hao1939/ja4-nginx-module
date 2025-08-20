@@ -1,0 +1,158 @@
+# Multi-stage Dockerfile to build nginx-ingress-controller with JA4 module
+# Based on mcr.microsoft.com/oss/kubernetes/ingress/nginx-ingress-controller:v1.11.5
+# Simplified version without ModSecurity to avoid Lua compatibility issues
+
+# ==================== BUILD STAGE ====================
+FROM alpine:3.21 AS builder
+
+# Version arguments - match ingress controller versions where possible
+ARG NGINX_VERSION=1.25.5
+ARG OPENSSL_VERSION=3.3.3
+ARG JA4_MODULE_VERSION=v1.3.0-beta
+ARG LUA_VERSION=5.1
+
+# Install build dependencies (excluding ModSecurity dependencies)
+RUN apk add --no-cache \
+    # Core build tools
+    gcc g++ libc-dev make cmake git wget patch \
+    # nginx dependencies  
+    pcre-dev pcre2-dev zlib-dev openssl-dev linux-headers \
+    # Lua dependencies
+    lua${LUA_VERSION}-dev luajit-dev \
+    # Additional dependencies
+    geoip-dev perl-dev
+
+WORKDIR /tmp/build
+
+# Download and extract JA4 module
+RUN echo "==> Downloading JA4 module ${JA4_MODULE_VERSION}" && \
+    wget https://github.com/FoxIO-LLC/ja4-nginx-module/releases/download/${JA4_MODULE_VERSION}/ja4-nginx-module-${JA4_MODULE_VERSION}.tar.gz && \
+    tar -zxf ja4-nginx-module-${JA4_MODULE_VERSION}.tar.gz && \
+    mv ja4-nginx-module-${JA4_MODULE_VERSION} ja4-nginx-module
+
+# Download and extract nginx source
+RUN echo "==> Downloading nginx ${NGINX_VERSION}" && \
+    wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    tar -zxf nginx-${NGINX_VERSION}.tar.gz
+
+# Download and extract OpenSSL source  
+RUN echo "==> Downloading OpenSSL ${OPENSSL_VERSION}" && \
+    wget https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz && \
+    tar -zxf openssl-${OPENSSL_VERSION}.tar.gz
+
+# Clone required nginx modules (excluding ModSecurity)
+RUN echo "==> Cloning nginx modules" && \
+    git clone --depth=1 https://github.com/vision5/ngx_devel_kit.git && \
+    git clone --depth=1 https://github.com/openresty/set-misc-nginx-module.git && \
+    git clone --depth=1 https://github.com/openresty/headers-more-nginx-module.git && \
+    git clone --depth=1 https://github.com/yaoweibin/ngx_http_substitutions_filter_module.git && \
+    git clone --depth=1 https://github.com/openresty/lua-nginx-module.git && \
+    git clone --depth=1 https://github.com/openresty/stream-lua-nginx-module.git && \
+    git clone --depth=1 https://github.com/chobits/lua-upstream-nginx-module.git && \
+    git clone --depth=1 https://github.com/atomx/nginx-http-auth-digest.git && \
+    git clone --depth=1 https://github.com/leev/ngx_http_geoip2_module.git && \
+    git clone --depth=1 --recursive https://github.com/google/ngx_brotli.git
+
+# Apply JA4 patches to OpenSSL
+RUN echo "==> Applying JA4 patches to OpenSSL" && \
+    cd openssl-${OPENSSL_VERSION} && \
+    patch -p1 < /tmp/build/ja4-nginx-module/patches/openssl.patch
+
+# Apply JA4 patches to nginx
+RUN echo "==> Applying JA4 patches to nginx" && \
+    cd nginx-${NGINX_VERSION} && \
+    patch -p1 < /tmp/build/ja4-nginx-module/patches/nginx.patch
+
+# Build nginx with all modules including JA4 (excluding ModSecurity)
+RUN echo "==> Building nginx with JA4 and ingress modules (no ModSecurity)" && \
+    cd nginx-${NGINX_VERSION} && \
+    export LUAJIT_LIB=/usr/lib && \
+    export LUAJIT_INC=/usr/include/luajit-2.1 && \
+    ./configure \
+        --prefix=/usr/local/nginx \
+        --conf-path=/etc/nginx/nginx.conf \
+        --modules-path=/etc/nginx/modules \
+        --http-log-path=/var/log/nginx/access.log \
+        --error-log-path=/var/log/nginx/error.log \
+        --lock-path=/var/lock/nginx.lock \
+        --pid-path=/run/nginx.pid \
+        --http-client-body-temp-path=/var/lib/nginx/body \
+        --http-fastcgi-temp-path=/var/lib/nginx/fastcgi \
+        --http-proxy-temp-path=/var/lib/nginx/proxy \
+        --http-scgi-temp-path=/var/lib/nginx/scgi \
+        --http-uwsgi-temp-path=/var/lib/nginx/uwsgi \
+        --with-debug \
+        --with-compat \
+        --with-pcre-jit \
+        --with-http_ssl_module \
+        --with-http_stub_status_module \
+        --with-http_realip_module \
+        --with-http_auth_request_module \
+        --with-http_addition_module \
+        --with-http_gzip_static_module \
+        --with-http_sub_module \
+        --with-http_v2_module \
+        --with-http_v3_module \
+        --with-stream \
+        --with-stream_ssl_module \
+        --with-stream_realip_module \
+        --with-stream_ssl_preread_module \
+        --with-threads \
+        --with-http_secure_link_module \
+        --with-http_gunzip_module \
+        --with-file-aio \
+        --without-mail_pop3_module \
+        --without-mail_smtp_module \
+        --without-mail_imap_module \
+        --without-http_uwsgi_module \
+        --without-http_scgi_module \
+        --with-cc-opt='-g -O2 -fPIE -fstack-protector-strong -Wformat -Werror=format-security -Wno-deprecated-declarations -fno-strict-aliasing -D_FORTIFY_SOURCE=2 --param=ssp-buffer-size=4 -DTCP_FASTOPEN=23 -fPIC -Wno-cast-function-type -m64 -mtune=generic' \
+        --with-ld-opt='-fPIE -fPIC -pie -Wl,-z,relro -Wl,-z,now' \
+        --user=www-data \
+        --group=www-data \
+        --with-openssl=/tmp/build/openssl-${OPENSSL_VERSION} \
+        --add-module=/tmp/build/ja4-nginx-module/src \
+        --add-module=/tmp/build/ngx_devel_kit \
+        --add-module=/tmp/build/set-misc-nginx-module \
+        --add-module=/tmp/build/headers-more-nginx-module \
+        --add-module=/tmp/build/ngx_http_substitutions_filter_module \
+        --add-module=/tmp/build/lua-nginx-module \
+        --add-module=/tmp/build/stream-lua-nginx-module \
+        --add-module=/tmp/build/lua-upstream-nginx-module \
+        --add-dynamic-module=/tmp/build/nginx-http-auth-digest \
+        --add-dynamic-module=/tmp/build/ngx_http_geoip2_module \
+        --add-dynamic-module=/tmp/build/ngx_brotli && \
+    make -j$(nproc) && \
+    make install
+
+# Verify the build includes JA4 module
+RUN echo "==> Verifying nginx build" && \
+    /usr/local/nginx/sbin/nginx -V 2>&1 | grep -q "ja4" && \
+    echo "✅ JA4 module successfully integrated" || \
+    (echo "❌ JA4 module not found in build" && exit 1)
+
+# ==================== FINAL STAGE ====================  
+FROM mcr.microsoft.com/oss/kubernetes/ingress/nginx-ingress-controller:v1.11.5
+
+# Copy the JA4-enabled nginx binary and modules
+COPY --from=builder /usr/local/nginx/sbin/nginx /usr/local/nginx/sbin/nginx
+COPY --from=builder /etc/nginx/modules /etc/nginx/modules
+
+# Create a test endpoint to verify JA4 functionality
+COPY --from=builder /tmp/build/ja4-nginx-module/test/testdata /tmp/ja4-testdata
+
+# Add labels for identification
+LABEL maintainer="JA4 Integration" \
+      description="nginx-ingress-controller with JA4 fingerprinting support (no ModSecurity)" \
+      ja4.module.version="${JA4_MODULE_VERSION}" \
+      nginx.version="${NGINX_VERSION}" \
+      openssl.version="${OPENSSL_VERSION}"
+
+# Add verification script
+RUN echo '#!/bin/sh' > /usr/local/bin/verify-ja4.sh && \
+    echo 'nginx -t 2>/dev/null && echo "✅ nginx config valid"' >> /usr/local/bin/verify-ja4.sh && \
+    echo 'nginx -V 2>&1 | grep -q "ja4" && echo "✅ JA4 module present" || echo "❌ JA4 module missing"' >> /usr/local/bin/verify-ja4.sh && \
+    chmod +x /usr/local/bin/verify-ja4.sh
+
+# The base image already handles the CMD, USER, and EXPOSE directives
+# We're just replacing the nginx binary while preserving everything else

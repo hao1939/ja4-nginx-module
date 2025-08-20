@@ -1,0 +1,49 @@
+services:
+  ja4-nginx-ingress:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ja4-nginx-ingress:v1.11.5-dev
+    container_name: ja4-nginx-ingress
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Debug port
+    volumes:
+      - ./test-configs:/etc/nginx/conf.d:ro
+      - ./logs:/var/log/nginx
+    environment:
+      - NGINX_DEBUG=true
+    networks:
+      - ja4-test-network
+
+  # Test backend service
+  test-backend:
+    image: nginx:alpine
+    container_name: test-backend
+    volumes:
+      - ./test-content:/usr/share/nginx/html:ro
+    networks:
+      - ja4-test-network
+
+  # SSL certificate generator (for testing)
+  cert-generator:
+    image: alpine/openssl
+    container_name: cert-generator
+    volumes:
+      - ./certs:/certs
+    command: >
+      sh -c "
+      if [ ! -f /certs/server.crt ]; then
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 
+        -keyout /certs/server.key -out /certs/server.crt
+        -subj '/C=US/ST=Test/L=Test/O=JA4Test/CN=ja4-test.local'
+        -addext 'subjectAltName=DNS:ja4-test.local,DNS:*.ja4-test.local'
+      fi
+      "
+    networks:
+      - ja4-test-network
+
+networks:
+  ja4-test-network:
+    driver: bridge

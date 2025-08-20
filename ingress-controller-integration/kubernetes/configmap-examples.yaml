@@ -1,0 +1,183 @@
+# ConfigMap Examples for JA4-enabled nginx-ingress-controller
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-configuration
+  namespace: ingress-nginx
+data:
+  # Enable JA4 fingerprints in access logs
+  log-format-upstream: |
+    $remote_addr - $remote_user [$time_local] "$request" 
+    $status $body_bytes_sent "$http_referer" "$http_user_agent"
+    ja4="$http_ssl_ja4" ja4s="$http_ssl_ja4s" ja4h="$http_ssl_ja4h" ja4t="$http_ssl_ja4t"
+  
+  # Optional: Enable debug logging for troubleshooting
+  error-log-level: "info"
+  
+  # Add JA4 headers to all responses (use with caution in production)
+  server-snippet: |
+    # Add JA4 fingerprint headers
+    add_header X-JA4-Client "$http_ssl_ja4" always;
+    add_header X-JA4-Server "$http_ssl_ja4s" always;
+    add_header X-JA4-HTTP "$http_ssl_ja4h" always;
+    add_header X-JA4-TCP "$http_ssl_ja4t" always;
+    
+    # Add processing timestamp
+    add_header X-JA4-Timestamp "$time_iso8601" always;
+
+---
+# Alternative ConfigMap with security-focused JA4 rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-configuration-security
+  namespace: ingress-nginx
+data:
+  # Security-focused logging with JA4
+  log-format-upstream: |
+    $remote_addr - [$time_local] "$request" $status 
+    "$http_user_agent" ja4="$http_ssl_ja4" 
+    country="$geoip2_data_country_name" city="$geoip2_data_city_name"
+  
+  # Block suspicious JA4 patterns
+  server-snippet: |
+    # Map JA4 patterns to actions
+    map $http_ssl_ja4 $ja4_action {
+        default "allow";
+        # Example: Block specific malicious JA4 signatures
+        "~^t13d.*_suspicious_pattern" "block";
+        # Example: Rate limit automated tools
+        "~^t12d.*_bot_pattern" "ratelimit";
+    }
+    
+    # Apply JA4-based blocking
+    if ($ja4_action = "block") {
+        return 403 "Access denied by JA4 fingerprint";
+    }
+    
+    # Set rate limiting based on JA4 patterns
+    if ($ja4_action = "ratelimit") {
+        set $limit_rate 1k;
+    }
+    
+    # Log security events
+    if ($ja4_action != "allow") {
+        access_log /var/log/nginx/security.log 
+            '$remote_addr - [$time_local] SECURITY: $ja4_action for JA4="$http_ssl_ja4"';
+    }
+
+---
+# ConfigMap for JA4-based routing and analytics
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-configuration-analytics
+  namespace: ingress-nginx
+data:
+  # Detailed analytics logging
+  log-format-upstream: |
+    {
+      "timestamp": "$time_iso8601",
+      "remote_addr": "$remote_addr",
+      "request": "$request",
+      "status": $status,
+      "body_bytes_sent": $body_bytes_sent,
+      "user_agent": "$http_user_agent",
+      "ja4": {
+        "client": "$http_ssl_ja4",
+        "server": "$http_ssl_ja4s", 
+        "http": "$http_ssl_ja4h",
+        "tcp": "$http_ssl_ja4t",
+        "client_raw": "$http_ssl_ja4_string",
+        "server_raw": "$http_ssl_ja4s_string"
+      },
+      "ssl": {
+        "protocol": "$ssl_protocol",
+        "cipher": "$ssl_cipher"
+      },
+      "timing": {
+        "request_time": $request_time,
+        "upstream_response_time": "$upstream_response_time"
+      }
+    }
+  
+  # Client type detection based on JA4 patterns
+  server-snippet: |
+    # Detect client types based on JA4 fingerprints
+    map $http_ssl_ja4h $client_type {
+        default "unknown";
+        "~ge11.*" "browser_chrome";
+        "~ge11.*firefox" "browser_firefox";
+        "~po.*" "api_client";
+        "~ge.*mobile" "mobile_browser";
+    }
+    
+    # Set custom headers based on detection
+    add_header X-Client-Type "$client_type" always;
+    
+    # Route mobile clients to mobile backends
+    if ($client_type = "mobile_browser") {
+        set $mobile_backend 1;
+    }
+    
+    # Different caching policies based on client type
+    if ($client_type = "api_client") {
+        expires 1h;
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+---
+# ConfigMap for JA4 debugging and development
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-configuration-debug
+  namespace: ingress-nginx
+data:
+  # Debug-level logging
+  error-log-level: "debug"
+  
+  # Comprehensive JA4 debugging
+  server-snippet: |
+    # Debug endpoint showing all JA4 variables
+    location /debug/ja4 {
+        return 200 'JA4 Debug Information:
+    
+    Client Fingerprints:
+    - JA4 (Standard): $http_ssl_ja4
+    - JA4 (Raw): $http_ssl_ja4_string  
+    - JA4 (One): $http_ssl_ja4one
+    
+    Server Fingerprints:
+    - JA4S (Standard): $http_ssl_ja4s
+    - JA4S (Raw): $http_ssl_ja4s_string
+    
+    HTTP Fingerprints:
+    - JA4H (Standard): $http_ssl_ja4h
+    - JA4H (Raw): $http_ssl_ja4h_string
+    
+    TCP Fingerprints:
+    - JA4T (Standard): $http_ssl_ja4t
+    - JA4T (Raw): $http_ssl_ja4t_string
+    
+    SSL Context:
+    - Protocol: $ssl_protocol
+    - Cipher: $ssl_cipher
+    - Server Name: $ssl_server_name
+    
+    Request Context:
+    - Remote Address: $remote_addr
+    - User Agent: $http_user_agent
+    - Timestamp: $time_iso8601
+    ';
+        add_header Content-Type text/plain;
+        access_log off;
+    }
+    
+    # Headers for all responses in debug mode
+    add_header X-Debug-JA4 "$http_ssl_ja4" always;
+    add_header X-Debug-JA4S "$http_ssl_ja4s" always;
+    add_header X-Debug-JA4H "$http_ssl_ja4h" always;
+    add_header X-Debug-SSL-Proto "$ssl_protocol" always;
+    add_header X-Debug-SSL-Cipher "$ssl_cipher" always;
